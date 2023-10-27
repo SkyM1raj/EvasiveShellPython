@@ -9,7 +9,7 @@ from logging import getLogger, ERROR
 getLogger('scapy.runtime').setLevel(ERROR)
 
 try:
-        from scapy.all immport *
+        from scapy.all import *
 except ImportError:
         print '[!] Scapy Installation Not Found'
         sys.exit(1)
@@ -19,7 +19,7 @@ try:
         spoofIP = raw_input('[*]Enter Ip to Spoof: ')
         IF = raw_input('[*] Enter Desired Interface: ')
 except KeyboardInterrupt:
-        print '[!} User Interrupted Input'
+        print '[!] User Interrupted Input'
         sys.exit(1)
         
 conf.verb = 0

